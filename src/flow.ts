@@ -1,4 +1,4 @@
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import type { Locator, Page } from "playwright-core";
@@ -309,6 +309,12 @@ async function openSettings(page: Page): Promise<void> {
 
 async function pickRadio(page: Page, name: string | RegExp): Promise<void> {
   const radio = page.getByRole("radio", { name, exact: typeof name === "string" }).first();
+  // 2026-10-17: an image job failed with 'no "x1" option' mid-run - the popover had closed behind the model menu, not
+  // lost the option. Reopen it once before concluding the option does not exist.
+  if (!(await radio.isVisible().catch(() => false))) {
+    await openSettings(page).catch(() => {});
+    await radio.waitFor({ state: "visible", timeout: 3000 }).catch(() => {});
+  }
   if (!(await radio.isVisible().catch(() => false))) {
     throw new Error(`Flow has no "${name}" option for the current mode/model.`);
   }
@@ -466,7 +472,19 @@ export async function attachAsset(page: Page, opener: Locator, assetName: string
 
 async function typePrompt(page: Page, prompt: string): Promise<void> {
   const box = page.locator(".ProseMirror");
-  await box.click();
+  // 2026-10-17: the first image job of a run died after 30 s because the settings popover (its "credit-cost-label"
+  // inside .cdk-overlay-container, no backdrop) was still open over the prompt box and swallowed the click; the next
+  // job went through once it had closed. Try briefly, then close overlays and try again before giving up.
+  for (let attempt = 0; ; attempt++) {
+    const ok = await box.click({ timeout: 8000 }).then(() => true, () => false);
+    if (ok) break;
+    if (attempt >= 2) {
+      await box.click({ timeout: 10_000 });
+      break;
+    }
+    await dismissOverlays(page);
+    await pause(page, 800);
+  }
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.press("Delete");
   // Enter submits in Flow, so the prompt goes in as a single line.
@@ -598,6 +616,19 @@ function extensionOf(file: string): string {
   return ".bin";
 }
 
+// rename() cannot cross drives: on Windows the downloads folder sits on C: (~/.flow-mcp/downloads) while the films
+// folder is often on D:, and every still of a 15-image run (2026-10-17) failed with "EXDEV: cross-device link not
+// permitted" after Flow had made it. Copy and delete instead when the plain rename is refused.
+function moveFile(from: string, to: string): void {
+  try {
+    renameSync(from, to);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EXDEV") throw err;
+    copyFileSync(from, to);
+    unlinkSync(from);
+  }
+}
+
 // Unpacks a multi-take ZIP into <stem>.mp4, <stem>-v2.mp4, ... - the same names a multi-variant generation gets - so
 // every take is usable instead of one unplayable archive. The ZIP is kept beside them, renamed, in case it is wanted.
 function unpackTakes(zip: string, targetStem: string): string[] {
@@ -606,10 +637,10 @@ function unpackTakes(zip: string, targetStem: string): string[] {
   const out: string[] = [];
   for (const [i, path] of takes.entries()) {
     const dest = `${targetStem}${i ? `-v${i + 1}` : ""}${extensionOf(path)}`;
-    renameSync(path, dest);
+    moveFile(path, dest);
     out.push(dest);
   }
-  renameSync(zip, `${targetStem}-takes.zip`);
+  moveFile(zip, `${targetStem}-takes.zip`);
   if (!out.length) throw new Error("Flow sent a ZIP with nothing usable inside it.");
   return out;
 }
@@ -676,7 +707,7 @@ async function downloadTile(page: Page, target: Locator | TileResolver, targetSt
       if (kind === ".zip") saved = unpackTakes(file, targetStem);
       else {
         const target = `${targetStem}${kind}`;
-        renameSync(file, target);
+        moveFile(file, target);
         saved = [target];
       }
       await page.keyboard.press("Escape");
@@ -794,9 +825,9 @@ export async function runGeneration(job: Job): Promise<string[]> {
   // reference images. The frames already pin the look, so the references are dropped and the job says so.
   const framesMode = s.type === "video" && Boolean(s.first_frame || s.last_frame);
   if (framesMode && s.reference_images?.length) {
-    job.note = [job.note, `first/last frames were set, so ${s.reference_images.length} reference image(s) were skipped — Flow allows one or the other.`]
+    job.note = [job.note, `first/last frames were set, so ${s.reference_images.length} reference image(s) were skipped â€” Flow allows one or the other.`]
       .filter(Boolean)
-      .join(" · ");
+      .join(" Â· ");
     s.reference_images = [];
   }
   for (const [i, ref] of (s.reference_images ?? []).entries()) {
@@ -829,7 +860,7 @@ export async function runGeneration(job: Job): Promise<string[]> {
     // later lookup - download, continue, assemble - unambiguous. Best effort: a failed rename must not lose the clip.
     const newTitle = `${basename(s.output_dir)}-${label}`;
     const renamed = await renameTile(page, mediaTile(page, id), newTitle).catch(() => false);
-    if (renamed) job.note = [job.note, `renamed in Flow to ${newTitle}`].filter(Boolean).join(" · ");
+    if (renamed) job.note = [job.note, `renamed in Flow to ${newTitle}`].filter(Boolean).join(" Â· ");
     await pause(page, 800);
     const stem = join(s.output_dir, label);
     // A video at rest has no media id, so it is tracked by its title - which the rename just changed. Looking for the
@@ -939,7 +970,7 @@ async function savePortrait(page: Page, name: string): Promise<string> {
   if (!pressed) throw new Error("Flow never showed the portrait's Download image button");
   const file = await waitForDownloadedFile(page, before, 90_000);
   const portrait = join(dir, `${name.replace(/[^\w.-]+/g, "_")}${extensionOf(file)}`);
-  renameSync(file, portrait);
+  moveFile(file, portrait);
   return portrait;
 }
 
@@ -1073,7 +1104,7 @@ async function downloadScene(page: Page, scene: FlowAsset, targetStem: string): 
   await page.getByRole("button", { name: "Download scene", exact: true }).click();
   const file = await waitForDownloadedFile(page, before, 600_000);
   const target = `${targetStem}${extensionOf(file)}`;
-  renameSync(file, target);
+  moveFile(file, target);
   await page.getByRole("button", { name: "Back button to go to previous page" }).click().catch(() => {});
   await pause(page, 2000);
   await ensureProjectGrid(page).catch(() => {});
@@ -1689,7 +1720,7 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
     failed.length ? `still failed: scene ${failed.join(", ")} (use Retry)` : "",
   ]
     .filter(Boolean)
-    .join(" · ");
+    .join(" Â· ");
   if (!files.length) throw new Error("No image could be generated for any scene. Open the Flow tab to see what Flow reported.");
 
   if (balance !== undefined && left !== undefined) job.credits = balance - left;

@@ -412,3 +412,13 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   the start.) freshMedia now counts a video tile without its thumbnail (or a <video>) as busy, and waitForNewMedia
   takes title-tracked tiles only once the same titles show on two polls running. Same clip with the fix: done in
   48 s, renamed SettleTest-scene-01, 4.0 s file downloaded.
+- WINDOWS, FILMS ON ANOTHER DRIVE (2026-10-17, 15-still run): every finished still failed with "EXDEV: cross-device
+  link not permitted, rename ...\.flow-mcp\downloads\<uuid> -> D:\...\scene-NN.jpeg". The downloads folder is on C:,
+  the films folder on D:, and renameSync cannot cross volumes. The file WAS on disk (three copies, one per download
+  retry) under the bare uuid named in the error. moveFile() now falls back to copy + unlink on EXDEV for every move in
+  flow.ts. Recovery for a run made before the fix: copy the uuid file named in each job's error onto <stem>.jpeg.
+- Same run: (1) the FIRST job died because the settings popover (`span.credit-cost-label` in .cdk-overlay-container,
+  no backdrop) was still open over `.ProseMirror` and took the click for 30 s; typePrompt now tries 8 s, runs
+  dismissOverlays and tries again (3 rounds). (2) One image job failed 'Flow has no "x1" option' mid-run: the popover
+  had closed behind the model pick. pickRadio now reopens the popover once before giving up.
+  These three fixes were built but NOT yet exercised live: Claude's running flow-mcp kept the old code (never kill it).

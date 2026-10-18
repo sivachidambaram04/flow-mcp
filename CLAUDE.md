@@ -41,7 +41,8 @@ OmniFlow (lingoflow.pro/omniflow), using subscription credits instead of the API
   rest hold only `img[alt="Generated video thumbnail"]`; a `<video>` appears after hover. In-progress tiles show `NN%`.
 - Download: right-click tile → `Download` → submenu. Image: `1K Original size`, `2K Upscaled`. Video:
   `270p Animated GIF`, `720p Original size`, `1080p Upscaled` (4K disabled on Pro). Playwright `download.saveAs` works over CDP.
-- Other tile menu items not automated yet: `Animate` (image→video), `Add to scene`, `Add to prompt`, `Rename`.
+- Other tile menu items not automated yet: `Animate` (image→video), `Add to scene`, `Add to prompt`, `Rename`
+  (image first frames from the project go through the Start picker instead - see 2026-10-18 below).
   Left nav: All media, Images, Videos, Characters, Scenes, Uploads, Tools, Trash.
 - Edit view: clicking a video tile opens `/project/<id>/edit/<uuid>`. It has the edit composer
   ("Describe how to edit this video…", Omni 1.1 Flash, `Start generation`) = basis for `flow_edit`;
@@ -422,3 +423,26 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   dismissOverlays and tries again (3 rounds). (2) One image job failed 'Flow has no "x1" option' mid-run: the popover
   had closed behind the model pick. pickRadio now reopens the popover once before giving up.
   These three fixes were built but NOT yet exercised live: Claude's running flow-mcp kept the old code (never kill it).
+- ANIMATE AN IMAGE ALREADY IN THE PROJECT (mapped live 2026-10-18, project "BTR 17th Oct", 0 credits). Goal: an exact
+  first frame from an existing tile, no download + re-upload, in the normal composer so the quote guard holds.
+  1. Image tile menu now reads: Favorite, Reuse prompt | Animate | Add to prompt, Download, Copy, Rename, Share |
+     Set project cover | Flag output | Move to trash. `Animate` turns Agent mode on (no quote) - avoided.
+  2. `Add to prompt` attaches the image as an INGREDIENT (chip "Ingredient", Ingredients mode = reference, not an
+     exact frame). Flipping the settings to `Frames` afterwards moves that chip into the Start slot ("Image
+     ingredient" chip, `Swap first and last frames`, `End`) - works, but is indirect and depends on order.
+  3. CHOSEN ROUTE: Frames mode -> `Start` (or `End`) opens "Select a frame image": `Close`, combobox `Select project`,
+     tabs Images | Uploads, `Upload media`, textbox `Search assets`, combobox `Sort assets` (Recent), listbox
+     `Asset list`, a preview image and an `Add to prompt` button. The picker opens with the NEWEST image already
+     highlighted and previewed, so pressing `Add to prompt` blind would attach the wrong picture. The list is virtual
+     (~14 newest only), so older images are found only by typing into `Search assets`. Clicking an option attaches it
+     at once and closes the picker; the slot's `Start` button is replaced by an "Image ingredient" chip whose
+     `.frame-trigger img` src carries the media id (checked against the grid tile's data-media-id: identical).
+     Options have no aria-label; their accessible name is the title, so getByRole("option", { name, exact: true }).
+  BUILT IN: first_frame / last_frame 'asset:<exact title>' -> attachFrame (search, exact match, refuses a title two
+  images share; our own fm- uploads take the newest), the job note names the attached media id. runGeneration reads
+  the quote AGAIN with the frames attached and applies max_credits to that. New scene option dry_run: does everything
+  up to `Start generation`, records the quote, clears the composer, generates nothing.
+  Verified through a scratch MCP (port 8799, scratch home): Omni 1.1 Flash 4 s 16:9 from asset:Anirudhan_Vinod-scene-03
+  (an old image, found only by search) -> quote 7 at 720p; asset:Anirudhan_thumbs-scene-01-v1 -> 4 at 360p; a prefix
+  that is not an exact title -> refused with "No image titled exactly". Grid unchanged afterwards, composer empty.
+  The paid path (pressing Start with an asset frame) has NOT been run yet.

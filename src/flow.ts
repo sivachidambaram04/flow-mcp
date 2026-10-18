@@ -378,6 +378,12 @@ async function applySettings(page: Page, job: Job): Promise<number> {
   if (s.type === "video" && s.duration) await pickRadio(page, `${s.duration}s`);
   await pickRadio(page, `x${s.variants ?? 1}`);
   await pause(page, 600);
+  return readQuote(page);
+}
+
+// Reads the "<N> credits" link in the open settings popover (opening it when needed), then closes the popover.
+async function readQuote(page: Page): Promise<number> {
+  await openSettings(page);
   const costText = await page.getByRole("link", { name: /credits?$/ }).innerText();
   const cost = Number(costText.match(/\d+/)?.[0] ?? NaN);
   await page.keyboard.press("Escape");
@@ -469,6 +475,70 @@ export async function attachAsset(page: Page, opener: Locator, assetName: string
   await list.waitFor({ state: "hidden", timeout: 10_000 });
   await pause(page, 500);
 }
+
+// Frames-mode slots, re-mapped live 2026-10-18: `Start` / `End` open "Select a frame image" (tabs Images | Uploads, a
+// `Search assets` box, listbox `Asset list` sorted Recent). The list is virtual - only the ~14 newest show - so an
+// older image is reachable only through the search. Clicking an option attaches it at once and closes the picker;
+// the slot's button is then replaced by an "Image ingredient" chip. The picker opens with the newest image already
+// highlighted, so nothing may be clicked until the exact title is on screen. `strict` (a user's asset:<title>)
+// refuses a title two images share; our own fm- uploads take the newest. Returns the attached media id when shown.
+async function attachFrame(page: Page, slot: "Start" | "End", title: string, strict: boolean): Promise<string | undefined> {
+  const composer = page.locator("flow-base-prompt-box");
+  const button = composer.getByRole("button", { name: slot, exact: true });
+  if (!(await button.isVisible().catch(() => false))) {
+    throw new Error(`Flow's ${slot} frame slot is not showing (Frames mode off, or the slot is already filled). Nothing was generated.`);
+  }
+  const search = page.getByRole("textbox", { name: "Search assets" });
+  const list = page.getByRole("listbox", { name: "Asset list" });
+  let opened = false;
+  for (let attempt = 0; attempt < 3 && !opened; attempt++) {
+    if (attempt) {
+      await page.keyboard.press("Escape");
+      await pause(page, 800);
+    }
+    await button.click();
+    opened = await search.waitFor({ state: "visible", timeout: 5000 }).then(() => true, () => false);
+  }
+  if (!opened) throw new Error(`Flow's frame picker did not open (three tries) while attaching "${title}" as the ${slot} frame. Nothing was generated.`);
+  const find = async () => {
+    await search.fill(title);
+    await pause(page, 1800);
+    return list.getByRole("option", { name: title, exact: true });
+  };
+  let option = await find();
+  // Search covers the Images tab; a user's own upload may live under Uploads only.
+  if (!(await option.count())) {
+    const uploads = page.getByRole("tab", { name: "Uploads", exact: true });
+    if (await uploads.isVisible().catch(() => false)) {
+      await uploads.click();
+      await pause(page, 1200);
+      option = await find();
+    }
+  }
+  const count = await option.count();
+  if (!count || (strict && count > 1)) {
+    const shown = (await list.getByRole("option").allInnerTexts().catch(() => [] as string[])).map((t) => t.trim()).slice(0, 8);
+    await page.keyboard.press("Escape");
+    await pause(page, 500);
+    throw new Error(
+      count
+        ? `${count} images in this project are titled "${title}", so the ${slot} frame would be a guess. Rename one in Flow (tile menu > Rename) and try again. Nothing was generated.`
+        : `No image titled exactly "${title}" in this project's frame picker${shown.length ? ` (searching showed: ${shown.join(", ")})` : ""}. Titles come from flow_assets. Nothing was generated.`,
+    );
+  }
+  await option.first().click();
+  await list.waitFor({ state: "hidden", timeout: 10_000 }).catch(() => {});
+  await pause(page, 800);
+  if (await button.isVisible().catch(() => false)) throw new Error(`Flow did not take "${title}" as the ${slot} frame. Nothing was generated.`);
+  return frameIds(page).then((ids) => ids[slot === "Start" ? 0 : 1]);
+}
+
+// Media ids of the images sitting in the Start and End slots (undefined for an empty slot).
+const frameIds = (page: Page): Promise<(string | undefined)[]> =>
+  page
+    .locator("flow-base-prompt-box .frame-trigger")
+    .evaluateAll((slots) => slots.map((f) => f.querySelector("img")?.getAttribute("src")?.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0]))
+    .catch(() => []);
 
 async function typePrompt(page: Page, prompt: string): Promise<void> {
   const box = page.locator(".ProseMirror");
@@ -815,15 +885,26 @@ export async function runGeneration(job: Job): Promise<string[]> {
     );
   }
 
-  if (s.first_frame) {
-    await attachAsset(page, page.getByRole("button", { name: "Start", exact: true }), await uploadAsset(page, job, s.first_frame, "start"));
-  }
-  if (s.last_frame) {
-    await attachAsset(page, page.getByRole("button", { name: "End", exact: true }), await uploadAsset(page, job, s.last_frame, "end"));
+  // A frame is either uploaded (fm-<job>-start...) or, with "asset:<exact title>", taken straight from the project
+  // through the slot's own picker - no download, no re-upload. (The tile menu's "Add to prompt" is NOT that route: it
+  // attaches the image as an Ingredient, i.e. a reference; only flipping to Frames afterwards moves it into Start.)
+  const attached: string[] = [];
+  for (const [slot, frame, label] of [["Start", s.first_frame, "start"], ["End", s.last_frame, "end"]] as const) {
+    if (!frame) continue;
+    const id = await attachFrame(page, slot, await uploadAsset(page, job, frame, label), frame.startsWith(ASSET_PREFIX));
+    attached.push(`${slot} = ${frame.startsWith(ASSET_PREFIX) ? frame.slice(ASSET_PREFIX.length).trim() : basename(frame)}${id ? ` (media ${id})` : ""}`);
   }
   // Flow's composer offers Frames OR Ingredients, never both: a clip with first/last frames cannot also carry
   // reference images. The frames already pin the look, so the references are dropped and the job says so.
   const framesMode = s.type === "video" && Boolean(s.first_frame || s.last_frame);
+  if (framesMode) {
+    // Ask again with the frames in place, so the guard (and a dry run's report) is the price of exactly what would run.
+    const quote = await readQuote(page).catch(() => undefined);
+    if (quote !== undefined) job.credits = quote;
+    if (job.credits > s.max_credits) {
+      throw new Error(`With the frames attached Flow quotes ${job.credits} credits, above max_credits=${s.max_credits}. Nothing was generated.`);
+    }
+  }
   if (framesMode && s.reference_images?.length) {
     job.note = [job.note, `first/last frames were set, so ${s.reference_images.length} reference image(s) were skipped â€” Flow allows one or the other.`]
       .filter(Boolean)
@@ -842,6 +923,21 @@ export async function runGeneration(job: Job): Promise<string[]> {
 
   await typePrompt(page, s.prompt);
   const start = page.getByRole("button", { name: "Start generation" });
+  if (s.dry_run) {
+    // Everything a real run does up to the button, then nothing: the composer is cleared and no credits move.
+    const ready = await start.isEnabled().catch(() => false);
+    await page.getByRole("button", { name: "Clear prompt" }).click().catch(() => {});
+    await pause(page, 600);
+    job.note = [
+      job.note,
+      `DRY RUN - nothing generated. Flow quoted ${job.credits} credits`,
+      attached.length ? `frames attached: ${attached.join(", ")}` : "",
+      `Start generation was ${ready ? "ready" : "disabled"} and was not pressed; the composer was cleared`,
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    return [];
+  }
   if (!(await start.isEnabled())) throw new Error("Flow's Start generation button is disabled; the prompt or inputs were not accepted.");
   await scrollToTop(page);
   const before = await mediaIds(page);

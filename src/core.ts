@@ -27,8 +27,13 @@ const sceneSchema = z.object({
   resolution: z.enum(["360p", "720p"]).optional().describe("Video resolution. Omni models only."),
   max_credits: z.number().int().min(0).default(25).describe("Safety cap: the scene is skipped (nothing spent) if Flow quotes more credits than this."),
   variants: z.number().int().min(1).max(4).optional().describe("Outputs per prompt (each one spends credits). Default 1."),
-  first_frame: z.string().optional().describe("First frame: absolute image path, or 'asset:<title>' for an image already in the Flow project."),
-  last_frame: z.string().optional().describe("Last frame: absolute image path, or 'asset:<title>'."),
+  first_frame: z
+    .string()
+    .optional()
+    .describe(
+      "First frame: absolute image path, or 'asset:<exact title>' for an image already in the Flow project (see flow_assets) - attached straight from the project through Flow's Start frame picker, no download or re-upload. The clip opens exactly on that image. A title two images share is refused.",
+    ),
+  last_frame: z.string().optional().describe("Last frame: absolute image path, or 'asset:<exact title>' (attached from the project, like first_frame)."),
   reference_images: z
     .array(z.string())
     .max(3)
@@ -38,6 +43,10 @@ const sceneSchema = z.object({
     ),
   download_quality: z.enum(["original", "upscaled"]).optional().describe("'upscaled' fetches 1080p video / 2K image (free, slower). Default original."),
   retries: z.number().int().min(0).max(3).default(1).describe("Automatic retries when Flow itself reports the generation failed."),
+  dry_run: z
+    .boolean()
+    .optional()
+    .describe("Set everything up in Flow (settings, frames, references, prompt), read Flow's credit quote, then clear the composer WITHOUT generating. Spends nothing; the job's note reports the quote and what was attached."),
   technique: z.string().optional().describe("Id from flow_techniques (e.g. 'orbit-360'); its exact phrase is appended to the prompt. One per scene."),
   reference_previous: z
     .boolean()

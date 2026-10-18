@@ -23,6 +23,7 @@ export interface SceneParams {
   continue_mode?: "exact" | "likeness";
   retries?: number;
   download_quality?: "original" | "upscaled";
+  dry_run?: boolean;
   output_dir: string;
   file_stem: string;
 }

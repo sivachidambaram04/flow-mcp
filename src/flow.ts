@@ -19,6 +19,11 @@ export interface FlowState {
 const IMAGE_TIMEOUT_MS = 3 * 60_000;
 const VIDEO_TIMEOUT_MS = 12 * 60_000;
 const FAILURE_TEXT = /failed|couldn.t|unable/i;
+// Flow's content-policy refusal (seen 2026-10-20): the same flow-error-tile as any failure, but its
+// `.error-message-text` reads "This generation might violate our policies...". Pressing Retry re-sends the identical
+// prompt and is refused again, so a policy block is reported, never retried.
+const POLICY_TEXT = /violate our policies/i;
+export const POLICY_BLOCKED = "Blocked by Flow's content policy (not charged): rephrase the prompt.";
 
 const pause = (page: Page, ms: number) => page.waitForTimeout(ms);
 
@@ -148,18 +153,35 @@ const mediaTile = (page: Page, id: string) =>
 
 // A failed generation becomes a <flow-error-tile> ("Failed ... You have not been charged") with Flow's own Retry
 // button. Old failures can sit anywhere in the grid, so only error tiles above the first already-known tile count.
-export async function newErrorTiles(page: Page, known: Iterable<string>): Promise<number> {
-  return page.evaluate(([ids, js]: [string[], string]) => {
-    const seen = new Set(ids);
+// Policy blocks are counted apart (with the tile titles, which for an agent tile start "Scene N:"), because they must
+// not be retried.
+export async function newErrorTiles(page: Page, known: Iterable<string>): Promise<{ errors: number; policy: string[] }> {
+  return page.evaluate(([ids, js, policy]: [string[], string, string]) => {
+    // An error tile has no media id; it is titled with its prompt, so a re-sent prompt shares the old failure's
+    // "title:" id. Old ones are therefore counted off by multiplicity instead of being matched by a set.
+    const old = new Map<string, number>();
+    for (const id of ids) old.set(id, (old.get(id) ?? 0) + 1);
     let errors = 0;
+    const blocked: string[] = [];
     for (const tile of document.querySelectorAll("flow-grid-tile-container")) {
       const id = (eval(js) as (t: Element) => string | undefined)(tile);
-      if (id && seen.has(id)) break;
-      if (tile.querySelector("flow-error-tile")) errors++;
+      const error = tile.querySelector("flow-error-tile");
+      if (id && (old.get(id) ?? 0) > 0) {
+        if (!error) break;
+        old.set(id, old.get(id)! - 1);
+        continue;
+      }
+      if (!error) continue;
+      if (new RegExp(policy, "i").test(error.textContent ?? "")) blocked.push(tile.getAttribute("aria-label") ?? "");
+      else errors++;
     }
-    return errors;
-  }, [[...known], TILE_ID_JS] as [string[], string]);
+    return { errors, policy: blocked };
+  }, [[...known], TILE_ID_JS, POLICY_TEXT.source] as [string[], string, string]);
 }
+
+// The newest failed tile that is worth a Retry: never a policy block.
+const retryableErrorTile = (page: Page) =>
+  page.locator("flow-grid-tile-container:has(flow-error-tile)").filter({ hasNotText: POLICY_TEXT }).first();
 
 // Flow's Retry replaces the failed tile with a fresh render of the same prompt and settings, free of charge.
 // Tiles produced by Agent mode only offer Delete, so the button may not be there at all.
@@ -190,22 +212,29 @@ export async function retryNewErrorTiles(
     await scrollToTop(page);
     let found = false;
     for (let step = 0; step < 60 && !found && !reachedKnown; step++) {
-      const state = await page.evaluate(([known, js]: [string[], string]) => {
+      const state = await page.evaluate(([known, js, policy]: [string[], string, string]) => {
         const seen = new Set(known);
         for (const tile of document.querySelectorAll("flow-grid-tile-container")) {
+          // Policy blocks are left alone (Retry only re-sends the refused prompt) and marked so the walk passes them.
+          const error = tile.querySelector("flow-error-tile");
+          if (error && tile.hasAttribute("data-fm-policy")) continue;
           const id = (eval(js) as (t: Element) => string | undefined)(tile);
           const name = tile.getAttribute("aria-label");
+          if (error && new RegExp(policy, "i").test(error.textContent ?? "")) {
+            tile.setAttribute("data-fm-policy", "");
+            continue;
+          }
           if ((id && seen.has(id)) || (name && seen.has(name))) return "known";
-          if (tile.querySelector("flow-error-tile")) return "error";
+          if (error) return "error";
         }
         return "none";
-      }, [ids, TILE_ID_JS] as [string[], string]);
+      }, [ids, TILE_ID_JS, POLICY_TEXT.source] as [string[], string, string]);
       if (state === "known") reachedKnown = true;
       else if (state === "error") {
         found = true;
         errors++;
         if (dryRun) break;
-        retryable = await retryErrorTile(page, page.locator("flow-grid-tile-container:has(flow-error-tile)").first());
+        retryable = await retryErrorTile(page, retryableErrorTile(page));
         if (!retryable) break;
         retried++;
       } else {
@@ -243,6 +272,9 @@ export async function freshMedia(page: Page, before: string[], kind?: MediaKind)
         id: idOf(t),
         kind: t.querySelector("flow-video-tile") ? "video" : t.querySelector("flow-image-tile") ? "image" : "other",
         label: t.getAttribute("aria-label") ?? "",
+        // A failed tile sits inside flow-image-tile and is titled with its prompt (2026-10-20), so it looked like a
+        // finished image: the job then tried to rename and download an error tile and hung.
+        failed: !!t.querySelector("flow-error-tile"),
         // For the first seconds after Start generation, before any "NN%" shows, a new video tile is titled with the
         // prompt itself and has no thumbnail; then it takes a short title of Flow's own and counts up; finished, it
         // has its thumbnail (watched live 2026-10-16, a 4 s clip: prompt title at 9 s, "0%" at 12 s, 100% at 34 s,
@@ -255,7 +287,9 @@ export async function freshMedia(page: Page, before: string[], kind?: MediaKind)
     },
     TILE_ID_JS,
   );
-  const ours = tiles.filter((t) => t.id && !before.includes(t.id) && !t.label.startsWith("fm-") && !t.busy && (!kind || t.kind === kind));
+  const ours = tiles.filter(
+    (t) => t.id && !t.failed && !before.includes(t.id) && !t.label.startsWith("fm-") && !t.busy && (!kind || t.kind === kind),
+  );
   return [...new Set(ours.map((t) => t.id!))];
 }
 
@@ -282,13 +316,14 @@ async function waitForNewMedia(page: Page, before: string[], count: number, time
       [...document.querySelectorAll("flow-grid-tile-container")].slice(0, 8).map((t) => (t as HTMLElement).innerText.match(/\d+%/)?.[0]).filter(Boolean),
     );
     if (job) job.progress = progress.join(", ") || undefined;
-    const errors = progress.length ? 0 : await newErrorTiles(page, before);
+    const { errors, policy } = progress.length ? { errors: 0, policy: [] } : await newErrorTiles(page, before);
+    if (policy.length && !fresh.length) throw new Error(POLICY_BLOCKED);
     if (!errors) continue;
     failures += errors;
     if (retriesLeft > 0) {
       retriesLeft--;
       if (job) job.progress = "Flow failed, retrying";
-      const retried = await retryErrorTile(page, page.locator("flow-grid-tile-container:has(flow-error-tile)").first());
+      const retried = await retryErrorTile(page, retryableErrorTile(page));
       if (retried) continue;
     }
     if (fresh.length) return fresh;
@@ -992,11 +1027,13 @@ async function scanGrid(page: Page, stopAt?: (assets: FlowAsset[]) => boolean): 
           // like a still in the Library and download as a ZIP of loose clips.
           kind: t.querySelector("flow-scene-tile") ? ("scene" as const) : t.querySelector("flow-video-tile") ? ("video" as const) : ("image" as const),
           id: (eval(js) as (t: Element) => string | undefined)(t),
+          // Failed tiles hold no media (titled with the prompt since 2026-10-20); they are not assets.
+          failed: !!t.querySelector("flow-error-tile"),
         })),
       TILE_ID_JS,
     );
-    for (const a of batch) {
-      if (!a.name) continue;
+    for (const { failed, ...a } of batch) {
+      if (!a.name || failed) continue;
       const known = seen.get(a.name);
       if (!known) seen.set(a.name, a);
       else if (!known.id && a.id) known.id = a.id;
@@ -1492,6 +1529,8 @@ interface RoundOutcome {
   produced: number;
   timedOut: boolean;
   failedTiles: number;
+  // Scene numbers (1-based) Flow refused on content policy; the agent titles each tile "Scene N: <prompt>".
+  policy: number[];
 }
 
 // One pass through Flow's agent for the given scene numbers: ask, wait, match the new tiles back to those scenes
@@ -1522,6 +1561,8 @@ async function agentRound(
   const before = new Set<string>(seenBefore.map((a) => a.id).filter((v): v is string => Boolean(v)));
   const beforeNames = new Set<string>(seenBefore.filter((a) => !a.id).map((a) => a.name));
   await scrollToTop(page);
+  // scanGrid leaves failed tiles out; this snapshot keeps them, so older policy blocks are not counted again.
+  const beforeTiles = await mediaIds(page);
 
   const clear = page.getByRole("button", { name: "Clear prompt" });
   if (await clear.isVisible().catch(() => false)) await clear.click();
@@ -1564,6 +1605,10 @@ async function agentRound(
   const failedTiles = await retryNewErrorTiles(page, before, true)
     .then((r) => r.errors)
     .catch(() => 0);
+  await scrollToTop(page);
+  const policy = (await newErrorTiles(page, beforeTiles).catch(() => ({ errors: 0, policy: [] as string[] }))).policy
+    .map((title) => Number(title.match(/^Scene (\d+):/)?.[1]))
+    .filter((n) => indexes.includes(n - 1));
   const fresh = (await scanGrid(page)).filter((t) => t.id && !before.has(t.id) && !beforeNames.has(t.name) && t.kind === "image");
 
   // Tiles finish in any order and the agent rewords prompts, so each image is matched back to its scene by the
@@ -1603,7 +1648,7 @@ async function agentRound(
     done.add(sceneIndex);
     produced++;
   }
-  return { produced, timedOut, failedTiles };
+  return { produced, timedOut, failedTiles, policy };
 }
 
 // Hands a whole multi-scene script to Flow's own agent, which generates every image in parallel (seconds instead
@@ -1740,13 +1785,15 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
   let failedTiles = 0;
   let agentRetries = 0;
   let agentProblem = "";
+  // Scenes Flow refused on content policy: asking again with the same words only gets refused again.
+  const blocked = new Set<number>();
   try {
     step(job, "switching Agent mode on");
     await setAgentMode(page, true);
     step(job, "setting the agent to generate without asking");
     await setAgentSettings(page, "Never", s.aspect_ratio ?? "16:9");
     for (let round = 0; round < 3; round++) {
-      const todo = scenes.map((_, i) => i).filter((i) => !done.has(i));
+      const todo = scenes.map((_, i) => i).filter((i) => !done.has(i) && !blocked.has(i));
       if (!todo.length) break;
       if (round) {
         agentRetries += todo.length;
@@ -1755,6 +1802,7 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
       const out = await agentRound(page, job, scenes, todo, round > 0, files, done);
       agentTimedOut ||= out.timedOut;
       failedTiles = out.failedTiles;
+      for (const n of out.policy) if (!done.has(n - 1)) blocked.add(n - 1);
       if (!out.produced) break; // the agent delivered nothing this round: stop asking it
     }
   } catch (err) {
@@ -1772,7 +1820,7 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
   }
 
   // Anything the agent still has not delivered is generated one by one, which is slower but exact.
-  const missing = scenes.map((_, i) => i).filter((i) => !done.has(i));
+  const missing = scenes.map((_, i) => i).filter((i) => !done.has(i) && !blocked.has(i));
   const failed: number[] = [];
   const base = Number(s.file_stem.match(/\d+/)?.[0] ?? 1);
   for (const [n, i] of missing.entries()) {
@@ -1796,11 +1844,15 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
       try {
         files.push(...(await runGeneration(single)));
         ok = true;
-      } catch {
-        /* one more attempt, then give up on this scene */
+      } catch (err) {
+        // one more attempt, then give up on this scene - unless Flow refused the prompt itself
+        if ((err as Error).message === POLICY_BLOCKED) {
+          blocked.add(i);
+          break;
+        }
       }
     }
-    if (!ok) failed.push(i + 1);
+    if (!ok && !blocked.has(i)) failed.push(i + 1);
   }
   step(job, "reading the credit balance");
   const left = await readCredits(page).catch(() => undefined);
@@ -1814,6 +1866,9 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
     failedTiles ? `${failedTiles} tile(s) failed in Flow` : "",
     missing.length ? `${missing.length - failed.length} re-run one by one` : "",
     failed.length ? `still failed: scene ${failed.join(", ")} (use Retry)` : "",
+    blocked.size
+      ? `blocked by Flow's content policy (not charged): scene ${[...blocked].sort((a, b) => a - b).map((i) => i + 1).join(", ")} - rephrase the prompt`
+      : "",
   ]
     .filter(Boolean)
     .join(" Â· ");

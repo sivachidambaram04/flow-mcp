@@ -446,3 +446,17 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   (an old image, found only by search) -> quote 7 at 720p; asset:Anirudhan_thumbs-scene-01-v1 -> 4 at 360p; a prefix
   that is not an exact title -> refused with "No image titled exactly". Grid unchanged afterwards, composer empty.
   The paid path (pressing Start with an asset frame) has NOT been run yet.
+- CONTENT-POLICY BLOCKS (mapped live 2026-10-20, project "BTR 17th Oct", a 10-still agent batch + composer stills):
+  the tile is the usual `flow-grid-tile-container` > `flow-image-tile` > `flow-error-tile`, `.error-title` "Failed",
+  `.error-message-text` "This generation might violate our policies. Please try a different prompt or send feedback.",
+  `.disclaimer-message` "You have not been charged for this generation.", buttons `Retry`, `Reuse prompt`, `Delete`
+  (agent-made tiles now offer Retry too). NEW: the error tile's aria-label is the PROMPT (agent: "Scene N: <prompt>"),
+  no longer empty, so TILE_ID_JS gives it a "title:" id and freshMedia/scanGrid took it for a finished image - the job
+  then tried to rename/download an error tile and hung for 10+ min (a composer job and an agent batch, both stuck at
+  "downloading"). Failed tiles are now excluded from freshMedia and scanGrid; newErrorTiles counts old error tiles off
+  by multiplicity (a re-sent prompt shares the old failure's title id). Pressing Retry on a policy block re-sends the
+  same prompt and was refused again (seen: day G01 failed twice). RULE: policy blocks get NO blind retry - the job ends
+  with "Blocked by Flow's content policy (not charged): rephrase the prompt.", flow_agent_images lists the blocked scene
+  numbers and does not re-run them one by one. Rephrase instead: avoid anything that reads as a minor or a lone young
+  female ("girl", "young woman", "child's", "hair tied back", "walking home alone"); "rear view of a sprinter, figure
+  small in frame", "no people" passed. Other failures keep their Retry.

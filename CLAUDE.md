@@ -460,3 +460,10 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   numbers and does not re-run them one by one. Rephrase instead: avoid anything that reads as a minor or a lone young
   female ("girl", "young woman", "child's", "hair tied back", "walking home alone"); "rear view of a sprinter, figure
   small in frame", "no people" passed. Other failures keep their Retry.
+- "@" IN A COMPOSER PROMPT OPENS THE ASSET PICKER (2026-10-20, two paid Omni clips, nothing charged): typing "@" into
+  the composer's `.ProseMirror` pops the ingredients picker (project combobox, tabs All/Images/Videos/Voices/Characters/
+  Uploads, textbox `Search assets`) and every following key went into that search ("No assets found."); its
+  `cdk-overlay-dark-backdrop` then blocked `Start generation` for 30 s and the job failed. Only the backdrop saved the
+  credits, and the dry run (which only checks isEnabled) had reported "ready" for the same prompts. typePrompt now strips
+  "@", closes any open picker first, types only into `flow-base-prompt-box .ProseMirror`, and refuses to generate unless
+  the prompt text is really in the box. Write "the first frame shows..." instead of "@Image1 =" in composer prompts.

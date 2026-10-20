@@ -576,7 +576,12 @@ const frameIds = (page: Page): Promise<(string | undefined)[]> =>
     .catch(() => []);
 
 async function typePrompt(page: Page, prompt: string): Promise<void> {
-  const box = page.locator(".ProseMirror");
+  // A picker left open over the composer (frame or ingredients, both with a "Search assets" box) takes the keys.
+  if (await page.getByRole("textbox", { name: "Search assets" }).isVisible().catch(() => false)) {
+    await page.keyboard.press("Escape");
+    await pause(page, 600);
+  }
+  const box = page.locator("flow-base-prompt-box .ProseMirror");
   // 2026-10-17: the first image job of a run died after 30 s because the settings popover (its "credit-cost-label"
   // inside .cdk-overlay-container, no backdrop) was still open over the prompt box and swallowed the click; the next
   // job went through once it had closed. Try briefly, then close overlays and try again before giving up.
@@ -593,8 +598,23 @@ async function typePrompt(page: Page, prompt: string): Promise<void> {
   await page.keyboard.press("ControlOrMeta+a");
   await page.keyboard.press("Delete");
   // Enter submits in Flow, so the prompt goes in as a single line.
-  await page.keyboard.type(prompt.replace(/\s*\n+\s*/g, " ").trim(), { delay: 8 });
+  const text = prompt.replace(/\s*\n+\s*/g, " ").trim();
+  // "@" typed into the composer opens Flow's asset picker with its "Search assets" box focused, and every key after it
+  // went into that search instead (2026-10-20: a paid clip's prompt "@Image1 = ..." ended up as a search, the picker's
+  // backdrop then blocked Start generation - nothing was charged only because of that). So "@" is never typed.
+  await page.keyboard.type(text.replace(/@/g, ""), { delay: 8 });
   await pause(page, 500);
+  // Never generate from a prompt that did not land in the composer: close any picker and check the text is there.
+  const search = page.getByRole("textbox", { name: "Search assets" });
+  if (await search.isVisible().catch(() => false)) {
+    await page.keyboard.press("Escape");
+    await pause(page, 600);
+  }
+  const norm = (s: string) => s.replace(/[\s ]+/g, " ").trim();
+  const landed = norm((await box.first().innerText().catch(() => "")) ?? "");
+  if (!landed.includes(norm(text.replace(/@/g, "")))) {
+    throw new Error(`The prompt did not land in Flow's prompt box (it shows "${landed.slice(0, 80)}"). Nothing was generated.`);
+  }
 }
 
 export type DownloadQuality = "original" | "upscaled";

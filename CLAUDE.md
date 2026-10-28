@@ -467,3 +467,10 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   credits, and the dry run (which only checks isEnabled) had reported "ready" for the same prompts. typePrompt now strips
   "@", closes any open picker first, types only into `flow-base-prompt-box .ProseMirror`, and refuses to generate unless
   the prompt text is really in the box. Write "the first frame shows..." instead of "@Image1 =" in composer prompts.
+- WRONG TILE RENAMED (2026-10-28, an x2 character-sheet still job on the PC): variant b was taken from an OLD still
+  ("Abhishek_Sharma-scene-03-v2") that the virtual grid had not mounted when the "before" snapshot was taken; it
+  mounted lower down while variant b was still rendering, counted as new, and was renamed to the job's name and
+  downloaded in its place (the user renamed it back by hand). freshMedia now only accepts tiles ABOVE the first known
+  tile with a real media id (new tiles always land on top); known videos are tracked by reusable titles, so they don't
+  mark the line. Checked against a mock grid (mid-run: only the finished new tile; done: both; empty project: fine).
+  Not yet re-run live.

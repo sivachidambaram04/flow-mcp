@@ -263,7 +263,11 @@ type MediaKind = "image" | "video";
 // - our OWN uploads (first/last frames, references - always named fm-<job>-...): an upload's tile shows up while it is
 //   still processing and only gets its final id a moment later, after the "before" snapshot, so it read as new;
 // - a tile of the wrong kind, such as the still that "Save frame" makes on the way to a continuation clip;
-// - a tile still rendering ("NN%").
+// - a tile still rendering ("NN%");
+// - an OLD tile the virtual grid had not mounted when the "before" snapshot was taken (2026-10-28, an x2 still job):
+//   it mounted lower down while the second variant rendered, counted as new, and was renamed and downloaded in its
+//   place, so another film's still lost its title. New tiles always appear at the top, so only tiles above the first
+//   known one can be ours. Known videos are tracked by title, which Flow reuses, so only a real media id marks the line.
 export async function freshMedia(page: Page, before: string[], kind?: MediaKind): Promise<string[]> {
   const tiles = await page.evaluate(
     (js) => {
@@ -287,7 +291,9 @@ export async function freshMedia(page: Page, before: string[], kind?: MediaKind)
     },
     TILE_ID_JS,
   );
-  const ours = tiles.filter(
+  const line = tiles.findIndex((t) => t.id && !t.id.startsWith("title:") && before.includes(t.id));
+  const above = line < 0 ? tiles : tiles.slice(0, line);
+  const ours = above.filter(
     (t) => t.id && !t.failed && !before.includes(t.id) && !t.label.startsWith("fm-") && !t.busy && (!kind || t.kind === kind),
   );
   return [...new Set(ours.map((t) => t.id!))];

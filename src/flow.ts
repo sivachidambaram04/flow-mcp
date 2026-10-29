@@ -268,7 +268,12 @@ type MediaKind = "image" | "video";
 //   it mounted lower down while the second variant rendered, counted as new, and was renamed and downloaded in its
 //   place, so another film's still lost its title. New tiles always appear at the top, so only tiles above the first
 //   known one can be ours. Known videos are tracked by title, which Flow reuses, so only a real media id marks the line.
-export async function freshMedia(page: Page, before: string[], kind?: MediaKind): Promise<string[]> {
+export async function freshMedia(page: Page, before: string[], kind?: MediaKind, count?: number): Promise<string[]> {
+  // Everything below reads positions in the grid, which only mean something from the top: a grid scrolled down
+  // (by a retry walk, a rename or the user) mounts only old tiles, none of them known, so the line was never found and
+  // every mounted still counted as new (2026-10-29: an x2 still job downloaded two old project stills).
+  const scrolled = await page.evaluate(() => [...document.querySelectorAll(".page-container")].some((e) => e.scrollTop > 0));
+  if (scrolled) await scrollToTop(page);
   const tiles = await page.evaluate(
     (js) => {
       const idOf = eval(js) as (t: Element) => string | undefined;
@@ -292,7 +297,14 @@ export async function freshMedia(page: Page, before: string[], kind?: MediaKind)
     TILE_ID_JS,
   );
   const line = tiles.findIndex((t) => t.id && !t.id.startsWith("title:") && before.includes(t.id));
-  const above = line < 0 ? tiles : tiles.slice(0, line);
+  let above = line < 0 ? tiles : tiles.slice(0, line);
+  // A job's own tiles are the top ones, so only the first `count` slots can hold them (failed tiles and our uploads
+  // take no slot; a tile still rendering does). An old tile further down is never ours, line or no line.
+  if (count) {
+    let slots = 0;
+    const end = above.findIndex((t) => !t.failed && !t.label.startsWith("fm-") && ++slots > count);
+    if (end >= 0) above = above.slice(0, end);
+  }
   const ours = above.filter(
     (t) => t.id && !t.failed && !before.includes(t.id) && !t.label.startsWith("fm-") && !t.busy && (!kind || t.kind === kind),
   );
@@ -306,7 +318,7 @@ async function waitForNewMedia(page: Page, before: string[], count: number, time
   let seen = "";
   while (Date.now() < deadline) {
     await pause(page, 2000);
-    const fresh = await freshMedia(page, before, kind);
+    const fresh = await freshMedia(page, before, kind, count);
     // New tiles are listed first, so anything beyond the requested count is not ours.
     if (fresh.length >= count) {
       const picked = fresh.slice(0, count);

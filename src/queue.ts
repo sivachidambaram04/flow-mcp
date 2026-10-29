@@ -49,6 +49,8 @@ export type JobRunner = (job: Job) => Promise<string[]>;
 const PAUSE_MIN_MS = Number(process.env.FLOW_MCP_PAUSE_MIN_S ?? 25) * 1000;
 const PAUSE_MAX_MS = Number(process.env.FLOW_MCP_PAUSE_MAX_S ?? 70) * 1000;
 
+const BROWSER_GONE = /has been closed|browser closed|Target closed|disconnected/i;
+
 export class JobQueue {
   private jobs = new Map<string, Job>();
   private working = false;
@@ -133,6 +135,18 @@ export class JobQueue {
           // is re-queued here. Timeouts are never retried automatically: they may still have spent credits.
           const retryable = /agent finished without creating/i.test(job.error);
           job.status = retryable && job.attempts <= (job.params.retries ?? 1) ? "queued" : "failed";
+          // Flow's Chrome went away (2026-10-28: closed overnight mid-batch). getBrowser relaunches it on the next
+          // call, so the rest of the batch used to run by itself whenever the window came back - after the user had
+          // stopped the work. Everything still waiting is held instead; flow_retry puts a job back in line.
+          if (BROWSER_GONE.test(job.error)) {
+            job.error += " (Flow's Chrome window was closed; the jobs still waiting were held, use flow_retry to run them)";
+            for (const other of this.list()) {
+              if (other.status !== "queued") continue;
+              other.status = "cancelled";
+              other.error = "Held: Flow's Chrome window was closed while an earlier job ran. Use flow_retry to run it.";
+              other.finishedAt = new Date().toISOString();
+            }
+          }
         }
         job.finishedAt = new Date().toISOString();
         this.lastFinished = Date.now();

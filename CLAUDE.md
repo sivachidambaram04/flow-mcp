@@ -474,3 +474,13 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   tile with a real media id (new tiles always land on top); known videos are tracked by reusable titles, so they don't
   mark the line. Checked against a mock grid (mid-run: only the finished new tile; done: both; empty project: fine).
   Not yet re-run live.
+- WRONG TILE AGAIN (2026-10-29, an x2 still job on the PC, after the 10-28 fix): both "new" stills were OLD project
+  stills. The 10-28 rule needs the first known tile to be on screen; when it is not (grid scrolled down, or ids that
+  no longer match), there was no line and every mounted tile counted. freshMedia now scrolls back to the top before
+  reading, and takes only the first `count` slots from the top (failed tiles and fm- uploads take none, a tile still
+  rendering does), so an old tile lower down can never be picked. Mock grid: line lost mid-run -> only the finished
+  new tile; scrolled 900 px down -> scrolls up, picks both new; failed tile on top -> skipped. Not yet re-run live.
+- CHROME CLOSED MID-BATCH (same night): one job died with "browser has been closed", and getBrowser relaunched Chrome
+  on the next call, so the rest of the batch finished by itself a day later, after the user had said stop. The queue
+  now holds (cancels with a note) every waiting job when a job fails because the browser went away; flow_retry runs
+  them again.

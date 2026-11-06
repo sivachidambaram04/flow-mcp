@@ -50,6 +50,8 @@ const PAUSE_MIN_MS = Number(process.env.FLOW_MCP_PAUSE_MIN_S ?? 25) * 1000;
 const PAUSE_MAX_MS = Number(process.env.FLOW_MCP_PAUSE_MAX_S ?? 70) * 1000;
 
 const BROWSER_GONE = /has been closed|browser closed|Target closed|disconnected/i;
+// Google's "unusual activity" check (flow.ts UNUSUAL_BLOCKED): every further attempt adds to the flag.
+const FLOW_FLAGGED = /unusual activity/i;
 
 export class JobQueue {
   private jobs = new Map<string, Job>();
@@ -129,6 +131,15 @@ export class JobQueue {
           job.files = await this.runner(job);
           job.status = "done";
           job.error = undefined;
+          // An agent batch keeps what it made but reports the flag in its note: hold the rest of the queue too.
+          if (FLOW_FLAGGED.test(job.note ?? "")) {
+            for (const other of this.list()) {
+              if (other.status !== "queued") continue;
+              other.status = "cancelled";
+              other.error = "Held: Google reported unusual activity on Flow. Check Flow by hand later, then use flow_retry.";
+              other.finishedAt = new Date().toISOString();
+            }
+          }
         } catch (err) {
           job.error = err instanceof Error ? err.message : String(err);
           // Failed tiles are already retried inside Flow (its own Retry button); only an agent that produced nothing
@@ -138,6 +149,16 @@ export class JobQueue {
           // Flow's Chrome went away (2026-10-28: closed overnight mid-batch). getBrowser relaunches it on the next
           // call, so the rest of the batch used to run by itself whenever the window came back - after the user had
           // stopped the work. Everything still waiting is held instead; flow_retry puts a job back in line.
+          const flagged = FLOW_FLAGGED.test(job.error) || FLOW_FLAGGED.test(job.note ?? "");
+          if (flagged) {
+            job.status = "failed";
+            for (const other of this.list()) {
+              if (other.status !== "queued") continue;
+              other.status = "cancelled";
+              other.error = "Held: Google reported unusual activity on Flow. Check Flow by hand later, then use flow_retry.";
+              other.finishedAt = new Date().toISOString();
+            }
+          }
           if (BROWSER_GONE.test(job.error)) {
             job.error += " (Flow's Chrome window was closed; the jobs still waiting were held, use flow_retry to run them)";
             for (const other of this.list()) {

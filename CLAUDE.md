@@ -491,3 +491,10 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   image failed to generate", 4 tries each, 0 credits), and the same crop uploaded as a plain reference never finished
   processing. The same prompts with words only work. Do not reword to get past it: keep child characters word-only
   (locks + age/height lines, more variants, pick the closest) or use a stylised sheet.
+- "UNUSUAL ACTIVITY" BLOCK (2026-11-06, PC, 8 stills incl. an empty pool): every tile failed with `.error-message-text`
+  "We noticed some unusual activity. Note that browser extensions that modify the page may cause issues. Please visit
+  the Help Center for more information." + "You have not been charged". Not a content-policy block. Each Flow Retry and
+  one-by-one re-run added attempts (8 prompts -> ~33 failures). Now UNUSUAL_BLOCKED: no Retry, no re-run, agent batches
+  stop, the queue holds every waiting job. Recovery is the user's: wait a few hours, make one still by hand in that
+  Chrome, then flow_retry. Never try to get past the check. Classification unit-checked on a mock grid; not yet seen live
+  through the new code.

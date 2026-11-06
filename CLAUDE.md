@@ -498,3 +498,9 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   stop, the queue holds every waiting job. Recovery is the user's: wait a few hours, make one still by hand in that
   Chrome, then flow_retry. Never try to get past the check. Classification unit-checked on a mock grid; not yet seen live
   through the new code.
+- AI PRO ACCOUNT (2026-11-06): the flow-mcp Chrome profile now signs into a Google AI Pro account (plan shows PRO,
+  1,050 Flow credits per MONTH, reset date shown under the account button) instead of the free tier's 50/day. Checked
+  live with a 0-credit still (credits 1,050 before and after). That account's settings popover adds a "Thinking level"
+  control (Low/Medium/High, default High), and its `Select model family` menu opened after more than 5 s, so pickModel
+  now waits 12 s and clicks once more before giving up. The first attempt also hit the known Agent-toggle timeout
+  (Agent was on); the retry worked.

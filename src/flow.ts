@@ -417,7 +417,13 @@ async function pickModel(page: Page, model: string): Promise<void> {
   if (!latest && (await button.innerText()).toLowerCase().includes(model.toLowerCase())) return;
   await button.click();
   const items = page.getByRole("menuitem");
-  await items.first().waitFor({ state: "visible", timeout: 5000 });
+  // The menu can take longer than 5 s to open (seen 2026-11-06 on an AI Pro account): wait longer, then click once more.
+  const opened = await items.first().waitFor({ state: "visible", timeout: 12000 }).then(() => true, () => false);
+  if (!opened) {
+    await dismissOverlays(page);
+    await button.click();
+    await items.first().waitFor({ state: "visible", timeout: 12000 });
+  }
   const names = (await items.allInnerTexts()).map((t) => t.replace(/\s+/g, " ").trim());
   const index = latest ? newestNanoBanana(names) : names.findIndex((n) => n.toLowerCase().includes(model.toLowerCase()));
   const shown = (await button.innerText()).replace(/\s+/g, " ");

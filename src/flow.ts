@@ -24,6 +24,15 @@ const FAILURE_TEXT = /failed|couldn.t|unable/i;
 // prompt and is refused again, so a policy block is reported, never retried.
 const POLICY_TEXT = /violate our policies/i;
 export const POLICY_BLOCKED = "Blocked by Flow's content policy (not charged): rephrase the prompt.";
+// Google's abuse check (seen 2026-11-06, every prompt incl. an empty pool): the same flow-error-tile, reading "We noticed
+// some unusual activity. Note that browser extensions that modify the page may cause issues...". Each Retry or re-run
+// only adds to the flag (8 prompts became ~33 failed attempts that day), so it stops ALL work at once: no Retry, no
+// re-run, the queue holds every waiting job. The user checks Flow by hand later; we never try to get past the check.
+const UNUSUAL_TEXT = /unusual activity/i;
+export const UNUSUAL_BLOCKED =
+  "Flow stopped generating: Google reported \"unusual activity\" (not charged). All Flow work was stopped and waiting jobs held. Do not retry: wait a few hours, then make one still by hand in that Chrome before using flow_retry.";
+// Error tiles Flow's Retry must never be pressed on.
+const NO_RETRY_TEXT = new RegExp(`${POLICY_TEXT.source}|${UNUSUAL_TEXT.source}`, "i");
 
 const pause = (page: Page, ms: number) => page.waitForTimeout(ms);
 
@@ -155,13 +164,17 @@ const mediaTile = (page: Page, id: string) =>
 // button. Old failures can sit anywhere in the grid, so only error tiles above the first already-known tile count.
 // Policy blocks are counted apart (with the tile titles, which for an agent tile start "Scene N:"), because they must
 // not be retried.
-export async function newErrorTiles(page: Page, known: Iterable<string>): Promise<{ errors: number; policy: string[] }> {
-  return page.evaluate(([ids, js, policy]: [string[], string, string]) => {
+export async function newErrorTiles(
+  page: Page,
+  known: Iterable<string>,
+): Promise<{ errors: number; policy: string[]; unusual: number }> {
+  return page.evaluate(([ids, js, policy, unusualText]: [string[], string, string, string]) => {
     // An error tile has no media id; it is titled with its prompt, so a re-sent prompt shares the old failure's
     // "title:" id. Old ones are therefore counted off by multiplicity instead of being matched by a set.
     const old = new Map<string, number>();
     for (const id of ids) old.set(id, (old.get(id) ?? 0) + 1);
     let errors = 0;
+    let unusual = 0;
     const blocked: string[] = [];
     for (const tile of document.querySelectorAll("flow-grid-tile-container")) {
       const id = (eval(js) as (t: Element) => string | undefined)(tile);
@@ -172,16 +185,17 @@ export async function newErrorTiles(page: Page, known: Iterable<string>): Promis
         continue;
       }
       if (!error) continue;
-      if (new RegExp(policy, "i").test(error.textContent ?? "")) blocked.push(tile.getAttribute("aria-label") ?? "");
+      if (new RegExp(unusualText, "i").test(error.textContent ?? "")) unusual++;
+      else if (new RegExp(policy, "i").test(error.textContent ?? "")) blocked.push(tile.getAttribute("aria-label") ?? "");
       else errors++;
     }
-    return { errors, policy: blocked };
-  }, [[...known], TILE_ID_JS, POLICY_TEXT.source] as [string[], string, string]);
+    return { errors, policy: blocked, unusual };
+  }, [[...known], TILE_ID_JS, POLICY_TEXT.source, UNUSUAL_TEXT.source] as [string[], string, string, string]);
 }
 
 // The newest failed tile that is worth a Retry: never a policy block.
 const retryableErrorTile = (page: Page) =>
-  page.locator("flow-grid-tile-container:has(flow-error-tile)").filter({ hasNotText: POLICY_TEXT }).first();
+  page.locator("flow-grid-tile-container:has(flow-error-tile)").filter({ hasNotText: NO_RETRY_TEXT }).first();
 
 // Flow's Retry replaces the failed tile with a fresh render of the same prompt and settings, free of charge.
 // Tiles produced by Agent mode only offer Delete, so the button may not be there at all.
@@ -228,7 +242,7 @@ export async function retryNewErrorTiles(
           if (error) return "error";
         }
         return "none";
-      }, [ids, TILE_ID_JS, POLICY_TEXT.source] as [string[], string, string]);
+      }, [ids, TILE_ID_JS, NO_RETRY_TEXT.source] as [string[], string, string]);
       if (state === "known") reachedKnown = true;
       else if (state === "error") {
         found = true;
@@ -334,7 +348,8 @@ async function waitForNewMedia(page: Page, before: string[], count: number, time
       [...document.querySelectorAll("flow-grid-tile-container")].slice(0, 8).map((t) => (t as HTMLElement).innerText.match(/\d+%/)?.[0]).filter(Boolean),
     );
     if (job) job.progress = progress.join(", ") || undefined;
-    const { errors, policy } = progress.length ? { errors: 0, policy: [] } : await newErrorTiles(page, before);
+    const { errors, policy, unusual } = progress.length ? { errors: 0, policy: [], unusual: 0 } : await newErrorTiles(page, before);
+    if (unusual) throw new Error(UNUSUAL_BLOCKED);
     if (policy.length && !fresh.length) throw new Error(POLICY_BLOCKED);
     if (!errors) continue;
     failures += errors;
@@ -1569,6 +1584,8 @@ interface RoundOutcome {
   failedTiles: number;
   // Scene numbers (1-based) Flow refused on content policy; the agent titles each tile "Scene N: <prompt>".
   policy: number[];
+  // Google's "unusual activity" check fired: stop everything.
+  unusual: boolean;
 }
 
 // One pass through Flow's agent for the given scene numbers: ask, wait, match the new tiles back to those scenes
@@ -1644,7 +1661,9 @@ async function agentRound(
     .then((r) => r.errors)
     .catch(() => 0);
   await scrollToTop(page);
-  const policy = (await newErrorTiles(page, beforeTiles).catch(() => ({ errors: 0, policy: [] as string[] }))).policy
+  const errorScan = await newErrorTiles(page, beforeTiles).catch(() => ({ errors: 0, policy: [] as string[], unusual: 0 }));
+  const unusual = errorScan.unusual > 0;
+  const policy = errorScan.policy
     .map((title) => Number(title.match(/^Scene (\d+):/)?.[1]))
     .filter((n) => indexes.includes(n - 1));
   const fresh = (await scanGrid(page)).filter((t) => t.id && !before.has(t.id) && !beforeNames.has(t.name) && t.kind === "image");
@@ -1686,7 +1705,7 @@ async function agentRound(
     done.add(sceneIndex);
     produced++;
   }
-  return { produced, timedOut, failedTiles, policy };
+  return { produced, timedOut, failedTiles, policy, unusual };
 }
 
 // Hands a whole multi-scene script to Flow's own agent, which generates every image in parallel (seconds instead
@@ -1825,6 +1844,7 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
   let agentProblem = "";
   // Scenes Flow refused on content policy: asking again with the same words only gets refused again.
   const blocked = new Set<number>();
+  let flagged = false;
   try {
     step(job, "switching Agent mode on");
     await setAgentMode(page, true);
@@ -1841,6 +1861,10 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
       agentTimedOut ||= out.timedOut;
       failedTiles = out.failedTiles;
       for (const n of out.policy) if (!done.has(n - 1)) blocked.add(n - 1);
+      if (out.unusual) {
+        flagged = true;
+        break;
+      }
       if (!out.produced) break; // the agent delivered nothing this round: stop asking it
     }
   } catch (err) {
@@ -1858,7 +1882,7 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
   }
 
   // Anything the agent still has not delivered is generated one by one, which is slower but exact.
-  const missing = scenes.map((_, i) => i).filter((i) => !done.has(i) && !blocked.has(i));
+  const missing = flagged ? [] : scenes.map((_, i) => i).filter((i) => !done.has(i) && !blocked.has(i));
   const failed: number[] = [];
   const base = Number(s.file_stem.match(/\d+/)?.[0] ?? 1);
   for (const [n, i] of missing.entries()) {
@@ -1888,9 +1912,14 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
           blocked.add(i);
           break;
         }
+        if ((err as Error).message === UNUSUAL_BLOCKED) {
+          flagged = true;
+          break;
+        }
       }
     }
     if (!ok && !blocked.has(i)) failed.push(i + 1);
+    if (flagged) break;
   }
   step(job, "reading the credit balance");
   const left = await readCredits(page).catch(() => undefined);
@@ -1910,6 +1939,8 @@ export async function runAgentBatch(job: Job): Promise<string[]> {
   ]
     .filter(Boolean)
     .join(" Â· ");
+  if (flagged) job.note = [job.note, UNUSUAL_BLOCKED].filter(Boolean).join(" · ");
+  if (flagged && !files.length) throw new Error(UNUSUAL_BLOCKED);
   if (!files.length) throw new Error("No image could be generated for any scene. Open the Flow tab to see what Flow reported.");
 
   if (balance !== undefined && left !== undefined) job.credits = balance - left;

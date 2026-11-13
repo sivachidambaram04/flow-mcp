@@ -330,9 +330,26 @@ async function waitForNewMedia(page: Page, before: string[], count: number, time
   let retriesLeft = job?.params.retries ?? 1;
   let failures = 0;
   let seen = "";
+  // STILLS SHIFTED BY ONE (2026-11-13, an 11-still PC batch): every file held the PREVIOUS prompt's image. The first
+  // poll comes 2 s after Start generation, before Flow has mounted the new tile, so the top slot still held the last
+  // job's finished still; whenever its id no longer matched the "before" snapshot it looked new, was taken at once,
+  // renamed and downloaded under this job's name. A job now accepts tiles only after it has seen its own generation
+  // in progress ("NN%" in the top tiles), or after 60 s for a tile that never showed a percentage.
+  let sawProgress = false;
+  const started = Date.now();
   while (Date.now() < deadline) {
     await pause(page, 2000);
     const fresh = await freshMedia(page, before, kind, count);
+    if (!sawProgress) {
+      sawProgress = await page.evaluate(() =>
+        [...document.querySelectorAll("flow-grid-tile-container")].slice(0, 8).some((t) => /\d+%/.test((t as HTMLElement).innerText)),
+      );
+      if (!sawProgress && Date.now() - started < 60_000) {
+        if (job) job.progress = "waiting for Flow to start";
+        continue;
+      }
+      sawProgress = true;
+    }
     // New tiles are listed first, so anything beyond the requested count is not ours.
     if (fresh.length >= count) {
       const picked = fresh.slice(0, count);

@@ -504,3 +504,8 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   control (Low/Medium/High, default High), and its `Select model family` menu opened after more than 5 s, so pickModel
   now waits 12 s and clicks once more before giving up. The first attempt also hit the known Agent-toggle timeout
   (Agent was on); the retry worked.
+- STILLS SHIFTED BY ONE (2026-11-13, PC still batch on the AI Pro account): each still file held the PREVIOUS prompt's
+  image (clips were fine). Most likely the first poll (2 s after Start) saw the last job's finished still in the top slot
+  before Flow mounted the new tile, and took it because its id no longer matched the "before" snapshot. waitForNewMedia
+  now accepts tiles only after it has seen "NN%" in the top tiles (or after 60 s). NOT yet verified live: run a free
+  3-still batch and check each file against its prompt (contact sheet) before the next real batch.

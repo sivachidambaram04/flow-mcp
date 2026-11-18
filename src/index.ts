@@ -249,6 +249,18 @@ server.registerTool(
 );
 
 server.registerTool(
+  "flow_project",
+  {
+    title: "Open or create a project",
+    description:
+      "Switch the Flow tab to the project with this exact title, or create it with create: true (free). Every later tool works in that project.",
+    inputSchema: shapes.project,
+    annotations: { openWorldHint: true },
+  },
+  (args) => reply(patient("flow_project", core.project(args))),
+);
+
+server.registerTool(
   "flow_techniques",
   {
     title: "Film technique presets",

@@ -2,7 +2,7 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, 
 import { homedir, tmpdir } from "node:os";
 import { basename, extname, join } from "node:path";
 import type { Locator, Page } from "playwright-core";
-import { HOME_DIR, getFlowPage, inEnglish } from "./chrome.js";
+import { FLOW_URL, HOME_DIR, getFlowPage, inEnglish } from "./chrome.js";
 import type { Job } from "./queue.js";
 import { extractZip } from "./platform.js";
 
@@ -52,6 +52,39 @@ export async function getFlowState(detailed = false): Promise<FlowState> {
     state.composer = await settingsTrigger(page).innerText().then((t) => t.replace(/\s+/g, " ").trim(), () => undefined);
   }
   return state;
+}
+
+// Opens the project with this exact title on Flow's home page, or creates it (home `New project` -> /project/<uuid>,
+// then the top bar's `Editable text` box takes the title, Enter saves). Mapped live 2026-11-17 on the PC.
+// The MCP's Flow tab moves to that project, so every later tool works in it.
+export async function openOrCreateProject(name: string, create: boolean): Promise<{ url: string; created: boolean }> {
+  const page = await getFlowPage();
+  await page.goto(inEnglish(FLOW_URL), { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "New project", exact: true }).waitFor({ timeout: 30_000 });
+  await pause(page, 1500);
+  const found = await page.evaluate((title) => {
+    const links = [...document.querySelectorAll('a[href*="/project/"]')] as HTMLAnchorElement[];
+    const hits = links.filter((a) => (a.parentElement?.innerText ?? "").split("\n").some((l) => l.trim() === title));
+    return [...new Set(hits.map((a) => a.getAttribute("href")))];
+  }, name);
+  if (found.length > 1) throw new Error(`${found.length} projects are titled "${name}"; rename one in Flow first.`);
+  if (found.length === 1) {
+    await page.goto(inEnglish(new URL(found[0]!, FLOW_URL).toString()), { waitUntil: "domcontentloaded" });
+    await pause(page, 3000);
+    return { url: page.url(), created: false };
+  }
+  if (!create) throw new Error(`No Flow project titled "${name}". Pass create: true to make it.`);
+  await page.getByRole("button", { name: "New project", exact: true }).click();
+  await page.waitForURL(/\/project\/[0-9a-f-]{36}/, { timeout: 30_000 });
+  await pause(page, 3000);
+  const box = page.getByRole("textbox", { name: "Editable text" });
+  await box.click();
+  await box.fill(name);
+  await box.press("Enter");
+  await pause(page, 2500);
+  const title = (await page.getByRole("heading", { level: 1 }).first().textContent())?.trim();
+  if (title !== name) throw new Error(`Created ${page.url()} but its title reads "${title}", not "${name}". Rename it in Flow.`);
+  return { url: page.url(), created: true };
 }
 
 // Menus close on Escape; the account panel does not and needs its own close button.

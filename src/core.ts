@@ -5,7 +5,7 @@ import { z } from "zod";
 import { assemble, localVoices, speakLocally } from "./assemble.js";
 import { GEMINI_VOICES, geminiKey, saveGeminiKey, speakWithGemini } from "./gemini.js";
 import { extractLastFrame } from "./chain.js";
-import { characterLook, createCharacter, downloadAsset, trashAsset, editCharacter, getFlowState, listAssets, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration } from "./flow.js";
+import { characterLook, createCharacter, downloadAsset, openOrCreateProject, trashAsset, editCharacter, getFlowState, listAssets, listCharacters, rememberCharacter, runAgentBatch, runContinue, runEdit, runGeneration } from "./flow.js";
 import { JobQueue, type Job } from "./queue.js";
 import { BIN, COMPUTER, IS_MAC, IS_WIN, moveToBin } from "./platform.js";
 import { TECHNIQUES, techniqueById } from "./techniques.js";
@@ -150,6 +150,10 @@ export const shapes = {
   discard: { path: z.string().min(1).describe("A saved film, still, narration or whole project folder inside the films folder, to move to this computer's bin (Mac Trash, Windows Recycle Bin).") },
   outputs: {},
   characters: {},
+  project: {
+    name: z.string().min(1).max(120).describe("Exact Flow project title to open, e.g. 'SAFF Final 2026'."),
+    create: z.boolean().default(false).describe("Create the project under this title when none exists. Free."),
+  },
   character_edit: {
     name: z.string().min(1).describe("Character to change, as listed by flow_characters."),
     change: z
@@ -219,6 +223,7 @@ export interface Core {
   narrate(a: Args<"narrate">): Promise<unknown>;
   character(a: Args<"character">): Promise<unknown>;
   characters(): Promise<unknown>;
+  project(a: Args<"project">): Promise<unknown>;
   character_edit(a: Args<"character_edit">): Promise<unknown>;
   edit(a: Args<"edit">): Promise<unknown>;
   trash(a: Args<"trash">): Promise<unknown>;
@@ -492,6 +497,11 @@ export class LocalCore implements Core {
   async characters() {
     if (this.queue.busy) throw new Error(BUSY);
     return (await listCharacters()).map((name) => ({ name, use_as: `asset:${name}` }));
+  }
+
+  async project({ name, create }: Args<"project">) {
+    if (this.queue.busy) throw new Error(BUSY);
+    return openOrCreateProject(name, create ?? false);
   }
 
   // Panel only: deliberately NOT registered as an MCP tool, so a key typed into Flow Studio never reaches Claude.

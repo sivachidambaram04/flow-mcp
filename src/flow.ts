@@ -1017,8 +1017,9 @@ export async function runGeneration(job: Job): Promise<string[]> {
   const s = job.params;
 
   await ensureProjectGrid(page);
-  const agent = page.getByRole("button", { name: "Agent", exact: true });
-  if ((await agent.getAttribute("aria-pressed")) === "true") await agent.click();
+  // No agent toggle in the composer means agent mode is off: the exact path never waits on it.
+  const agent = agentToggle(page);
+  if ((await agent.getAttribute("aria-pressed", { timeout: 5000 }).catch(() => null)) === "true") await agent.click();
   const clear = page.getByRole("button", { name: "Clear prompt" });
   if (await clear.isVisible().catch(() => false)) await clear.click();
 
@@ -1545,8 +1546,13 @@ export async function runEdit(job: Job): Promise<string[]> {
 // The agent session panel hides the composer, so a toggle attempted underneath it does nothing at all. Leaving agent
 // mode on then breaks the NEXT job, which expects the plain composer - a free character build failed that way. So this
 // confirms the toggle actually landed rather than assuming the click worked.
+// The composer's agent toggle: "Flow Agent" since 2026-11-20, "Agent" before (kept as a fallback).
+function agentToggle(page: Page) {
+  return page.getByRole("button", { name: /^(Flow )?Agent$/ }).first();
+}
+
 async function setAgentMode(page: Page, on: boolean): Promise<void> {
-  const agent = page.getByRole("button", { name: "Agent", exact: true });
+  const agent = agentToggle(page);
   // Playwright says why a click did not land ("<div ...> intercepts pointer events", "element is not visible"); keep
   // that, so a failure names what was in the way instead of guessing.
   let why = "";

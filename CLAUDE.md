@@ -28,6 +28,10 @@ OmniFlow (lingoflow.pro/omniflow), using subscription credits instead of the API
 - Composer: prompt box is `.ProseMirror`; Enter submits. Buttons by accessible name: `Agent` (toggle,
   must be off: agent mode is conversational and asks for confirmation), `Settings trigger`,
   `Start generation`, `Add ingredients to the prompt box`, `Clear prompt`; Frames mode adds `Start` / `End`.
+- 2026-11-20: the agent toggle is now named `Flow Agent` (still a button with aria-pressed, in the composer next to
+  `Settings trigger`). Every job died with "waiting for getByRole('button', { name: 'Agent', exact: true })".
+  flow.ts uses agentToggle() = /^(Flow )?Agent$/ (old name kept as fallback), and the plain composer path treats a
+  missing toggle as "agent off" (5 s read, no throw) instead of waiting 30 s.
 - Settings popover (radios): Image|Video · Frames|Ingredients (video) · aspect (video 16:9, 9:16; image
   also 4:3, 1:1, 3:4) · `Select model family` menu · 360p|720p and 4s|6s|8s|10s (Omni only) · x1–x4 ·
   live quote as a link "<N> credits". The trigger click sometimes does not open it: retry.

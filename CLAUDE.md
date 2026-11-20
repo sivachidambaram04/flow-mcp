@@ -513,3 +513,11 @@ The preview tool could not read the project while it lived in ~/Desktop; check t
   before Flow mounted the new tile, and took it because its id no longer matched the "before" snapshot. waitForNewMedia
   now accepts tiles only after it has seen "NN%" in the top tiles (or after 60 s). NOT yet verified live: run a free
   3-still batch and check each file against its prompt (contact sheet) before the next real batch.
+- COVER IMAGES WITH A REFERENCE (2026-11-20, Nano Banana Pro, 0 credits): Flow's content policy blocked two x2 jobs whose
+  prompt said "same two people, same faces" and printed the athletes' names; the same reference with "Recreate the moment
+  in the attached broadcast frame, following its pose and composition" (people described by kit and pose, no names)
+  passed first time. runGeneration adds its CHARACTER LOCK line ("match the reference exactly") to every job with a
+  reference and there is no option to leave it out; it did not cause a block on its own, but if blocks return, an
+  opt-out flag is the next thing to build. A tight close-up face frame (~140 KB JPEG) twice never finished upload
+  processing (90 s timeout) while wider frames went through; reusing an already uploaded `asset:fm-...` title avoids
+  a second upload.

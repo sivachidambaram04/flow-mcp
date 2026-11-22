@@ -11,6 +11,12 @@ OmniFlow (lingoflow.pro/omniflow), using subscription credits instead of the API
   `src/techniques.ts` presets · `src/playbook.ts` guidance returned by `flow_status`
 - Test: `node scripts/e2e.mjs <project> '<scenes json>'` (spends credits unless scenes are images)
 
+## Code map
+
+`graphify-out/graph.json` + `GRAPH_REPORT.md` is a code knowledge graph of `src/` (AST only, no LLM). Before grepping, try
+`graphify explain "<function>"`, `graphify query "<question>"` or `graphify path "A" "B"` (install: `uv tool install graphifyy`).
+Rebuild after code changes: `graphify update .`. Treat it as a map, not truth: confirm in the source before editing.
+
 ## Rules
 
 - Never guess selectors. Map them from the live page (`ariaSnapshot`, DOM dump) before writing driver code.
